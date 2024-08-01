@@ -1,0 +1,351 @@
+//+------------------------------------------------------------------+
+//|                                                      ProjectName |
+//|                                      Copyright 2020, CompanyName |
+//|                                       http://www.companyname.net |
+//+------------------------------------------------------------------+
+#property copyright "MindaLucian"
+#property link      "MindaLucian"
+#property version   "1.00"
+//+------------------------------------------------------------------+
+//| Includes                                                         |
+//+------------------------------------------------------------------+
+#include <Trade/Trade.mqh>
+CTrade trade;
+//+------------------------------------------------------------------+
+//| Inputs                                                           |
+//+------------------------------------------------------------------+
+input group "---->General Inputs<----";
+
+input long InpMagicNumber=181105;
+input double InpLots=0.01; //fixed/additional lots/percent
+input bool InpNotifications=true;
+//+------------------------------------------------------------------+
+//|                                                                  |
+//+------------------------------------------------------------------+
+input group "---->Range Inputs(Complementare-LONG)<----";
+input int InpStopLoss=100; // InpStopLoss (pips / percent)
+input int InpStepC=100; // InpStepC (pips)
+input double InpMultiplicatorComp=2;//Multiplicator Complementare
+input group "---->Range Inputs(Hedge)<----";
+input int InpStepHedge=100;//Step Hedge
+input double InpMultiplicatorHedge=3;//Multiplicator Volume Hedge
+input double InpTakeProfitLimit=5;//TakeProfit Limit
+input group "---->MarginUse<----";
+input double InpMarginUse=4; //Percent of Balance used as Margin
+input int InpMaxHedgeTrades=10; //MAXIM TRADES IN HEDGE
+input group "---------------------------->Time Filter<------------------------------";
+input bool InpTimeFilter=true;
+input int InpTimeStartHour = 9;
+input int InpTimeStartMin  = 0;
+input int InpTimeEndHour   = 21;
+input int InpTimeEndMin    = 0;
+input double InpMaxDrawdownAllowed = 25; //Money <= CLOSE
+//+------------------------------------------------------------------+
+//| Global D                                                        |
+//+------------------------------------------------------------------+
+MqlTick  prevTick,lastTick;
+#define KEY_X 88
+#define KEY_E 69
+#define KEY_H 72
+#define KEY_S 83
+
+ulong ticketnumber=-1;
+double LotBuy,LotSell,priceOpen,priceBuy,Lots;
+int ok,complementare=1,direction,startsell,buy,maxHedge,contor=1;
+
+int OnInit()
+  {
+   trade.SetExpertMagicNumber(InpMagicNumber);
+   return(INIT_SUCCEEDED);
+  }
+
+void OnDeinit(const int reason)
+  {
+
+  }
+
+void OnTick()
+  {
+//TIMEFILTER
+   datetime LocalTime=TimeLocal();
+
+   MqlDateTime DateTimeStructure;
+   TimeCurrent(DateTimeStructure);
+   DateTimeStructure.sec=0;
+   TimeToStruct(LocalTime,DateTimeStructure);
+
+   DateTimeStructure.hour=InpTimeStartHour;
+   DateTimeStructure.min=InpTimeStartMin;
+   datetime timeStart=StructToTime(DateTimeStructure);
+
+   DateTimeStructure.hour=InpTimeEndHour;
+   DateTimeStructure.min=InpTimeEndMin;
+   datetime timeEnd=StructToTime(DateTimeStructure);
+   bool isTime = TimeCurrent() >timeStart && TimeCurrent() <timeEnd; //se afla in range
+
+   if(InpTimeFilter==true)
+     {
+      if(isTime==true)
+        {
+         if(maxHedge<=InpMaxHedgeTrades)
+           {
+            CBSH();
+           }
+        }
+      else
+        {
+         CloseAllPositions();
+         ok=0;
+         complementare=1;
+         direction=0;
+        }
+     }
+   else
+     {
+      if(maxHedge<=InpMaxHedgeTrades)
+        {
+         CBSH();
+        }
+     }
+  }
+//+------------------------------------------------------------------+
+//Functions
+//Count Open Positions
+int CountOpenBuyPositions()
+  {
+   int counter=0;
+   int total=PositionsTotal();
+   for(int i=total-1; i>=0; i--)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket<=0)
+        {
+         Print("Failed to get position ticket");
+         return -1;
+        }
+      if(!PositionSelectByTicket(ticket))
+        {
+         Print("Failed to select position by ticket");
+         return -1;
+        }
+      ulong magicnumber;
+      if(!PositionGetInteger(POSITION_MAGIC,magicnumber))
+        {
+         Print("Failed to get magicnumber");
+         return -1;
+        }
+      if(InpMagicNumber==magicnumber)
+        {
+         if(PositionGetString(POSITION_COMMENT)=="COMPLEMENTARE BUY")
+           {
+            counter++;
+           }
+        }
+     }
+   return counter;
+  }
+
+//+------------------------------------------------------------------+
+//|Check Trailing Stop                                               |
+//+------------------------------------------------------------------+
+void CheckTrailingStop(int stoploss)
+  {
+   double price = SymbolInfoDouble(_Symbol,SYMBOL_ASK);// Get the current price for BUY positions
+   double stopLossDistance = stoploss * _Point; // Convert the stop loss distance to points
+
+   for(int i = 0; i < PositionsTotal(); i++)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(PositionSelectByTicket(ticket))
+        {
+         if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
+           {
+            double current_SL = PositionGetDouble(POSITION_SL);
+            double current_TP = PositionGetDouble(POSITION_TP);
+            double newStopLoss = price - stopLossDistance;
+            // Adjust the stop loss only if it's better than the current one
+            if(newStopLoss > current_SL || current_SL == 0)
+              {
+               trade.PositionModify(ticket, newStopLoss, current_TP);
+              }
+           }
+         else
+            if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
+              {
+               price = SymbolInfoDouble(Symbol(), SYMBOL_ASK); // Get the current price for SELL positions
+               double current_SL = PositionGetDouble(POSITION_SL);
+               double current_TP = PositionGetDouble(POSITION_TP);
+               double newStopLoss = price + stopLossDistance;
+               // Adjust the stop loss only if it's better than the current one
+               if(newStopLoss < current_SL || current_SL == 0)
+                 {
+                  trade.PositionModify(ticket, newStopLoss, current_TP);
+                 }
+              }
+        }
+     }
+  }
+//+------------------------------------------------------------------+
+double RoundUp(double InputValue, double RoundingValue)
+  {
+   double result=RoundingValue*MathCeil(InputValue/RoundingValue);
+   return result;
+  }
+//+------------------------------------------------------------------+
+void CloseAllPositions()
+  {
+   for(int i=PositionsTotal()-1; i>=0; i--)
+     {
+      ulong ticket=PositionGetTicket(i);//get ticket
+      trade.PositionClose(ticket,i);//close
+     }
+  }
+//+------------------------------------------------------------------+
+void CBSH()
+  {
+   static double NextPrice;
+   double ask=SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+   double bid=SymbolInfoDouble(_Symbol,SYMBOL_BID);
+   double UseMargin=AccountInfoDouble(ACCOUNT_MARGIN);
+   if(UseMargin<=InpMarginUse*AccountInfoDouble(ACCOUNT_EQUITY)/100)
+     {
+      if(PositionsTotal()==0 && startsell==0)
+        {
+         if(trade.Buy(InpLots,NULL,lastTick.ask,0,0,"COMPLEMENTARE BUY"))
+           {
+            ticketnumber=trade.ResultOrder();
+            ok=0;
+            complementare=1;
+            direction=1;
+            buy=1;
+            maxHedge=0;
+            LotBuy=InpLots*InpMultiplicatorHedge;
+            LotSell=InpLots*InpMultiplicatorHedge;
+            Lots=InpLots;
+           }
+        }
+      if(PositionsTotal()==0 && startsell==1)
+        {
+         if(trade.Sell(InpLots,NULL,lastTick.bid,0,0,"COMPLEMENTARE SELL"))
+           {
+            ticketnumber=trade.ResultOrder();
+            ok=0;
+            complementare=1;
+            direction=0;
+            buy=0;
+            maxHedge=0;
+            LotSell=RoundUp(InpLots*InpMultiplicatorHedge,0.01);
+            LotBuy=RoundUp(InpLots*InpMultiplicatorHedge,0.01);
+            Lots=InpLots;
+           }
+        }
+      //identify prima pozitie
+      for(int i=PositionsTotal(); i>=0  && ok==0; i--)
+        {
+         ulong ticket=PositionGetTicket(i);//get ticket
+         ulong magicnumber;
+         if(ticket==ticketnumber)
+           {
+            if(PositionSelectByTicket(ticket))
+              {
+               PositionGetInteger(POSITION_MAGIC,magicnumber);
+               if(InpMagicNumber==magicnumber)
+                 {
+                  if(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)
+                    {
+                     NextPrice=PositionGetDouble(POSITION_PRICE_OPEN)+InpStepC*_Point;
+                     ok=1;
+                    }
+                  else
+                    {
+                     NextPrice=PositionGetDouble(POSITION_PRICE_OPEN)-InpStepC*_Point;
+                     ok=1;
+                    }
+                 }
+              }
+           }
+        }
+      NextPrice=NormalizeDouble(NextPrice,_Digits);
+      if(complementare==1)
+        {
+         if(buy==1)
+           {
+            if(ask>NextPrice)
+              {
+               if(trade.Buy(Lots,NULL,lastTick.ask,0,0,"COMPLEMENTARE BUY"))
+                 {
+                  NextPrice=NormalizeDouble(NextPrice+InpStepC*_Point,_Digits);
+                  Lots=RoundUp(Lots*InpMultiplicatorComp,0.01);
+                 }
+              }
+           }
+         else
+           {
+            if(bid<NextPrice)
+              {
+               if(trade.Sell(Lots,NULL,lastTick.bid,0,0,"COMPLEMENTARE SELL"))
+                 {
+                  NextPrice=NormalizeDouble(NextPrice-InpStepC*_Point,_Digits);
+                   Lots=RoundUp(Lots*InpMultiplicatorComp,0.01);
+                 }
+              }
+           }
+        }
+      if(PositionsTotal()>=2 && complementare==1)
+        {
+         CheckTrailingStop(InpStopLoss);
+        }
+      else
+        {
+         if(buy==1)
+           {
+            priceOpen=NormalizeDouble(NextPrice-(InpStepC+InpStepHedge)*_Point,_Digits);
+            priceBuy=NormalizeDouble(priceOpen+InpStepHedge*_Point,_Digits);
+           }
+         else
+           {
+            priceBuy=NormalizeDouble(NextPrice+(InpStepC+InpStepHedge)*_Point,_Digits);
+            priceOpen=NormalizeDouble(priceBuy-InpStepHedge*_Point,_Digits);
+           }
+
+         if(direction==1)
+           {
+            if(bid<priceOpen)
+              {
+               if(trade.Sell(LotSell,NULL,priceOpen,0,0,"HS"))
+                 {
+                  complementare=0;
+                  direction=0;
+                  startsell=1;
+                  maxHedge++;
+                  LotBuy=RoundUp(LotSell*InpMultiplicatorHedge,0.01);
+                 }
+              }
+           }
+         else
+           {
+            if(ask>priceBuy)
+              {
+               if(trade.Buy(LotBuy,NULL,priceBuy,0,0,"HB"))
+                 {
+                  complementare=0;
+                  direction=1;
+                  startsell=0;
+                  maxHedge++;
+                  LotSell=RoundUp(LotBuy*InpMultiplicatorHedge,0.01);
+                 }
+              }
+           }
+        }
+     }
+
+   if(InpTakeProfitLimit<=AccountInfoDouble(ACCOUNT_PROFIT) && complementare==0)
+     {
+      CloseAllPositions();
+      ok=0;
+      complementare=1;
+      direction=0;
+      contor=0;
+     }
+  }
+//+------------------------------------------------------------------+
